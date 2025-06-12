@@ -1,87 +1,91 @@
 package ncepu;
-import org.apache.activemq.command.JournalQueueAck;
-import redis.clients.jedis.*;
+
+import redis.clients.jedis.Jedis;
+import redis.clients.jedis.Transaction;
+import redis.clients.jedis.exceptions.JedisConnectionException;
 
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-
+import java.util.function.Supplier;
 /**
  * 小车控制类（线程安全）
  * 功能：处理移动逻辑，保证Redis操作原子性
  */
-class Car {
+public class Car {
     private final String carId;
     int mapWidth;
     int mapLength;
-    private Position currentPos;
-    private static JedisPool jedisPool;
-    private static final ExecutorService threadPool =
-            Executors.newFixedThreadPool(10);  // 根据需求配置线程数
 
-    public static void cleanupThreadPool() {
+    private static Supplier<Jedis> jedisProvider;
+    private static final ExecutorService threadPool = Executors.newFixedThreadPool(10);
+
+    public Car(String carId) {
+        this.carId = carId;
+    }
+
+    public static void setJedisProvider(Supplier<Jedis> provider) {
+        if (jedisProvider == null) {
+            jedisProvider = provider;
+        }
+    }
+
+    public static void cleanup() {
         if (!threadPool.isShutdown()) {
             threadPool.shutdownNow();
         }
     }
 
-    // 添加关闭钩子（避免内存泄漏）
-    static {
-        Runtime.getRuntime().addShutdownHook(new Thread(threadPool::shutdownNow));
-    }
-
-    public Car(String carId) {
-        this.carId = carId;
-    }//Car属性Id
-
-    public static void setJedisPool(JedisPool pool) {//初始化连接池
-        if (jedisPool == null) {
-            jedisPool = pool;
+    public void initialize() {
+        if (jedisProvider == null) {
+            throw new IllegalStateException("Jedis provider not set");
         }
-    }
 
-    public void initialize() {//初始化
-        long time = System.currentTimeMillis();
-        try (Jedis jedis = jedisPool.getResource()) {
-            String mapWidthStr = jedis.get("mapWidth");
-            String mapLengthStr = jedis.get("mapLength");
-            //设置默认值
-            this.mapWidth = (mapWidthStr != null) ? Integer.parseInt(mapWidthStr) : 10;
-            this.mapLength = (mapLengthStr != null) ? Integer.parseInt(mapLengthStr) : 10;
-            //获取小车位置
-            String posKey = positionKey();
-            String posStr = jedis.get(posKey);
-            if (posStr == null) {
+        Jedis jedis = jedisProvider.get();
+        try {
+            this.mapWidth = getIntegerConfig(jedis, "mapWidth", 10);
+            this.mapLength = getIntegerConfig(jedis, "mapLength", 10);
+
+            if (!hasPosition(jedis)) {
                 System.out.println("[" + carId + "]< 未找到小车坐标 >");
             }
-
+        } finally {
+            if (jedis != null) jedis.close();
         }
     }
 
-
+    // 移动方法
     public synchronized void moveStep() {
         threadPool.execute(() -> {
-            try (Jedis jedis = jedisPool.getResource()) {
-                System.out.println("[ " + Thread.currentThread().getName() + " ][ 开始处理小车" + carId + " ]");
-                //获取下一步
-                String nextPosStr = jedis.lpop(routeKey());
-                if (nextPosStr == null) return;
-                //解析下一步坐标
-                Position target = parsePosition(nextPosStr);
-                if (/*CheckTask(jedis) &&*/ tryMove(jedis, target)) {
-                    updatePosition(jedis, target);
-                    System.out.println("[" + carId + "]< 小车" + carId + "移动到" + nextPosStr + " >");
+            Jedis jedis = null;
+            try {
+                System.out.println("["+carId+"][" + Thread.currentThread().getName() + " Start]");
+                jedis = jedisProvider.get();
+                Position target = getNextPosition(jedis);
+
+                if(target == null) {
+                    System.out.println("["+carId+"]未收到小车坐标");
+                    return;
                 }
+                if (tryMove(jedis, target)) {
+                    updatePosition(jedis, target);
+                    System.out.println("[" + carId + "]< 小车" + carId + "移动到" + target + " >");
+                }
+
+
             } catch (Exception e) {
                 System.err.println("[" + carId + "]移动异常: " + e.getMessage());
             } finally {
-                System.out.println("[ " + Thread.currentThread().getName() + " ][ 任务结束 ]");
+                System.out.println("["+carId+"][ " + Thread.currentThread().getName() + " Finnish ]");
+                if (jedis != null) jedis.close();
             }
         });
     }
 
+
+
     //检查小车路径是否为全亮
-    private boolean CheckTask(Jedis jedis)
+    boolean CheckTask(Jedis jedis)
     {
         List<String> task = jedis.lrange(routeKey(), 0, -1);
         boolean result = false;
@@ -102,46 +106,43 @@ class Car {
         return result;
     }
 
-    //障碍物检测
+
+
     private boolean tryMove(Jedis jedis, Position target) {
-        boolean result = false;
-        System.out.println("[" + carId + "]< 检查障碍: " + target + " >");
         jedis.watch(obstacleKey());
-       try {
-            if (isObstacle(jedis, target)) {
-                handleObstacle(jedis);
-            } else {
-                result = true;
+        try {
+
+            if (!isObstacle(jedis, target)) {
+                return true;
             }
+            handleObstacle(jedis);
+            return false;
         } finally {
             jedis.unwatch();
         }
-        return result;
     }
 
-
-    // 更新位置方法
     private void updatePosition(Jedis jedis, Position newPos) {
         Position currentPos = parsePosition(jedis.get(positionKey()));
-        try (Transaction tx = jedis.multi()) {
-            //清除旧位置的障碍标记
+        try {
+            Transaction tx = jedis.multi();
             tx.setbit(obstacleKey(), offset(currentPos), false);
-            //记录小车路径
-            tx.rpush("Car"+carId+"Path",newPos.x + ","+ newPos.y+"|"+System.currentTimeMillis());
-            //更新小车位置
-            tx.set(positionKey(), newPos.x + "," + newPos.y);
-            //设置新位置的障碍标记
+            tx.rpush("Car" + carId + "Path", newPos.toString() + "|" + System.currentTimeMillis());
+            tx.set(positionKey(), newPos.toString());
             tx.setbit(obstacleKey(), offset(newPos), true);
-            //更新探索地图（位图操作）
             updateExploredMap(tx, newPos);
             tx.exec();
-        } catch (Exception e) {
-            System.err.println("["+carId+"]"+carId+"小车事务失败: " + e.getMessage());
         }
+
+        catch (Exception e) {
+            System.err.println("["+carId+"]"+carId+"小车移动失败: " + e.getMessage());
+            throw new RuntimeException(e);
+        }
+
     }
 
     // 更新点亮地图
-    private void updateExploredMap(Transaction tx, Position center) {
+    void updateExploredMap(Transaction tx, Position center) {
         for (int dx = -1; dx <= 1; dx++) {
             for (int dy = -1; dy <= 1; dy++) {
                 int x = center.x + dx;
@@ -168,15 +169,33 @@ class Car {
     //如果是障碍物清空队列并上报
     private void handleObstacle(Jedis jedis) {
         System.out.println("["+carId+"]< 检测到障碍，清空队列 >");
-        Transaction tx = jedis.multi();
-        tx.sadd("obstacle_events", carId);
-        tx.del(routeKey());
-        //tx.sadd(routeKey());
-        tx.exec();
+        try {
+            Transaction tx = jedis.multi();
+            tx.sadd("obstacle_events", carId);
+            tx.del(routeKey());
+            //tx.sadd(routeKey());
+            tx.exec();
+        }catch (Exception e) {
+            throw new RuntimeException(e);
+        }
     }
 
-    // 协助方法（解析位移量、解析坐标）
-    private int offset(Position pos) {
+    // 协助方法（解析位移量、解析坐标等等）
+    private int getIntegerConfig(Jedis jedis, String key, int defaultValue) {
+        String valueStr = jedis.get(key);
+        return (valueStr != null) ? Integer.parseInt(valueStr) : defaultValue;
+    }
+
+    private boolean hasPosition(Jedis jedis) {
+        return jedis.exists(positionKey());
+    }
+
+    private Position getNextPosition(Jedis jedis) {
+        String nextPosStr = jedis.lpop(routeKey());
+        return (nextPosStr != null) ? parsePosition(nextPosStr) : null;
+    }
+
+    int offset(Position pos) {
         return pos.y * mapWidth + pos.x;
     }
 
@@ -184,7 +203,7 @@ class Car {
         return y * mapWidth + x;
     }
 
-    private Position parsePosition(String str) {
+    Position parsePosition(String str) {
         String[] parts = str.split(",");
         return new Position(
                 Integer.parseInt(parts[0]),
