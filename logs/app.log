@@ -5643,3 +5643,4 @@ Caused by: java.net.SocketException: Connection reset by peer
 	at redis.clients.jedis.util.RedisOutputStream.flush(RedisOutputStream.java:138)
 	at redis.clients.jedis.Connection.flush(Connection.java:303)
 	... 15 more
+2025-06-12 20:19:07 [ActiveMQ Task-1] INFO  FailoverTransport:1054 - Successfully connected to tcp://192.168.43.69:61616
