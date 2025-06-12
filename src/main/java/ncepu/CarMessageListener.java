@@ -22,7 +22,7 @@ public class CarMessageListener {
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final AtomicBoolean reconnectFlag = new AtomicBoolean(false);
 
-    // 初始化MQ连接（带重连）
+    // 初始化MQ连接
     public void initConnection() throws JMSException {
         running.set(true);
         establishConnection();

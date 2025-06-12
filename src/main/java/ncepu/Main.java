@@ -9,13 +9,10 @@ public class Main {
         try {
             // 初始化Redis连接池
             JedisPoolUtil.initialize();
-
             // 设置初始状态
             JedisPoolUtil.setCarStatus(1);
-
             // 初始化小车连接器
             Car.setJedisProvider(JedisPoolUtil::getConnection);
-
             // 初始化消息监听器
             CarMessageListener listener = new CarMessageListener();
             listener.initConnection();
@@ -37,13 +34,10 @@ public class Main {
         try {
             // 关闭MQ监听
             if (listener != null) listener.closeConnection();
-
             // 关闭小车资源
             Car.cleanup();
-
             // 更新状态
             JedisPoolUtil.setCarStatus(0);
-
             // 关闭连接池
             JedisPoolUtil.shutdown();
             System.out.println("====系统关闭成功====");
