@@ -92,14 +92,19 @@ public class CarMessageListener {
 
     // 连接监控线程
     private void monitorConnection() {
+        int attempts = 0;
         while (running.get()) {
             try {
                 TimeUnit.SECONDS.sleep(5); // 每5秒检查一次连接
 
                 // 检查连接状态
-                if (reconnectFlag.get()) {
+                if (reconnectFlag.get()&&attempts<5) {
+                    attempts++;
                     System.out.println("[MQ] 检测到重连标志，尝试重连...");
                     reconnect();
+                }
+                else {
+                    reconnectFlag.set(false);
                 }
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
@@ -110,9 +115,12 @@ public class CarMessageListener {
     // 重新连接逻辑
     private synchronized void reconnect() {
         // 防止重入：如果已经在重连中则返回
-        if (reconnectFlag.compareAndSet(true, true)) {
-            System.out.println("[MQ] 已在重连中，跳过本次请求");
-            return;
+            if (reconnectFlag.compareAndSet(true, true)) {
+                System.out.println("[MQ] 已在重连中，跳过本次请求");
+                return;
+            }
+        else {
+            reconnectFlag.set(false);
         }
 
         try {
@@ -121,7 +129,7 @@ public class CarMessageListener {
 
             // 尝试建立新连接
             int attempts = 0;
-            while (running.get()&&attempts<4) {
+            while (running.get()&&attempts<5) {
                 attempts++;
                 try {
                     establishConnection();
