@@ -9,7 +9,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.function.Supplier;
 /**
- * 小车控制类（线程安全）
+ * 小车控制类
  * 功能：处理移动逻辑，保证Redis操作原子性
  */
 public class Car {
@@ -36,45 +36,51 @@ public class Car {
         }
     }
 
-    public void initialize() {
+    public boolean initialize() {
+        boolean result = false;
         if (jedisProvider == null) {
             throw new IllegalStateException("Jedis provider not set");
         }
-
         Jedis jedis = jedisProvider.get();
         try {
             this.mapWidth = getIntegerConfig(jedis, "mapWidth", 10);
             this.mapLength = getIntegerConfig(jedis, "mapLength", 10);
-
             if (!hasPosition(jedis)) {
-                System.out.println("[" + carId + "]< 未找到小车坐标 >");
+                throw new JedisConnectionException("cannot find position");
             }
-        } finally {
+            result = true;
+        }
+        catch (JedisConnectionException e) {
+            System.out.println("[" + carId + "]--未找到小车坐标--");
+        }
+        finally {
             if (jedis != null) jedis.close();
         }
+        return result;
     }
 
     // 移动方法
-    public synchronized void moveStep() {
+    public  void moveStep() {
         threadPool.execute(() -> {
             Jedis jedis = null;
             try {
-                System.out.println("["+carId+"][" + Thread.currentThread().getName() + " Start]");
+                System.out.println("["+carId+"][ " + Thread.currentThread().getName() + " Start ]");
                 jedis = jedisProvider.get();
-                Position target = getNextPosition(jedis);
+                boolean result = CheckTask(jedis);//检查路径
+                Position target = getNextPosition(jedis);//lpop
 
                 if(target == null) {
-                    System.out.println("["+carId+"]未收到小车坐标");
+                    System.out.println("["+carId+"]--未收到任务信息--");
                     return;
                 }
-                if (tryMove(jedis, target)) {
+                if (result&&tryMove(jedis, target)) {
                     updatePosition(jedis, target);
                     System.out.println("[" + carId + "]< 小车" + carId + "移动到" + target + " >");
                 }
 
 
             } catch (Exception e) {
-                System.err.println("[" + carId + "]移动异常: " + e.getMessage());
+                System.err.println("[" + carId + "]--移动异常--: " + e.getMessage());
             } finally {
                 System.out.println("["+carId+"][ " + Thread.currentThread().getName() + " Finnish ]");
                 if (jedis != null) jedis.close();
@@ -85,25 +91,43 @@ public class Car {
 
 
     //检查小车路径是否为全亮
-    boolean CheckTask(Jedis jedis)
-    {
-        List<String> task = jedis.lrange(routeKey(), 0, -1);
-        boolean result = false;
-        for(int i = 0; i<task.size(); i++)
-        {
-            if(!jedis.getbit("map",offset(parsePosition(task.get(i)))))//小车路径有未点亮区域
-                result = true;
+    boolean CheckTask(Jedis jedis) {
+        List<String> task = jedis.lrange(routeKey(), 0, -1);//获取队列
+        boolean lighted = false;//全亮为false
+        for (int i = 0; i < task.size(); i++) {
+            if (!jedis.getbit("map", offset(parsePosition(task.get(i)))))//小车路径有黑块
+            {
+                lighted = true;
+            }
+            if (i == task.size() - 1) {
+                for (int dx = -1; dx < 2; dx++) {
+                    for (int dy = -1; dy < 2; dy++) {
+                        Position TaskTarget = parsePosition(task.get(i));
+                        int x = TaskTarget.x + dx;
+                        int y = TaskTarget.y + dy;
+                        if (x >= 0 && x < mapWidth &&
+                                y >= 0 && y < mapLength) {
+                            int offset = offset(x, y);
+                            if (!jedis.getbit("map", offset)) {
+                                lighted = true;
+                            }
+                        }
+
+                    }
+                }
+            }
         }
-        if(!result) {
-            System.out.println("[" + carId + "]< 小车"+carId+"路径全亮 >");
-            System.out.println("[" + carId + "]< 删除任务队列"+carId+" >");
+
+        if (!lighted) {
+            System.out.println("[" + carId + "]< 小车" + carId + "路径全亮 >");
+            System.out.println("[" + carId + "]< 删除任务队列" + carId + " >");
             Transaction tx = jedis.multi();
             tx.del(routeKey());
             //tx.sadd(routeKey());
             tx.exec();
 
         }
-        return result;
+        return lighted;
     }
 
 
@@ -135,7 +159,7 @@ public class Car {
         }
 
         catch (Exception e) {
-            System.err.println("["+carId+"]"+carId+"小车移动失败: " + e.getMessage());
+            System.err.println("["+carId+"]--小车移动失败--:" + e.getMessage());
             throw new RuntimeException(e);
         }
 
@@ -168,7 +192,7 @@ public class Car {
 
     //如果是障碍物清空队列并上报
     private void handleObstacle(Jedis jedis) {
-        System.out.println("["+carId+"]< 检测到障碍，清空队列 >");
+        System.out.println("["+carId+"]--检测到障碍，清空队列--");
         try {
             Transaction tx = jedis.multi();
             tx.sadd("obstacle_events", carId);

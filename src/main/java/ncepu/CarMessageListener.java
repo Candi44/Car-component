@@ -6,8 +6,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * ActiveMQ消息监听器（带自动重连功能）
- * 功能：监听指定队列，接收小车启动指令，支持自动重连
+ * ActiveMQ消息监听器
+ * 功能：监听指定队列，接收小车启动指令，支持异常触发重连
  */
 public class CarMessageListener {
     private static final String BROKER_URL = "failover:(tcp://192.168.43.69:61616)" +
@@ -40,7 +40,12 @@ public class CarMessageListener {
     private void establishConnection() throws JMSException {
         ActiveMQConnectionFactory factory = new ActiveMQConnectionFactory(BROKER_URL);
         mqConnection = factory.createConnection();
-        mqConnection.setExceptionListener(new CustomExceptionListener());
+
+        mqConnection.setExceptionListener(e -> {
+            System.err.println("[MQ] 触发连接异常监听器: " + e.getMessage());
+            reconnectFlag.set(true);
+        });
+
         mqConnection.start();
 
         session = mqConnection.createSession(false, Session.AUTO_ACKNOWLEDGE);
@@ -53,20 +58,34 @@ public class CarMessageListener {
                 if (message instanceof TextMessage) {
                     String text = ((TextMessage) message).getText();
                     if (text == null) {
-                        System.err.println("消息内容为空");
+                        System.err.println("--消息内容为空--");
                         return;
                     }
                     String carId = text.trim();
                     carId = carId.substring(1, carId.length() - 1);
                     if (carId.isEmpty()) {
-                        System.err.println("收到空ID消息，已忽略");
+                        System.err.println("--忽略空信息--");
                         return;
                     }
 
                     handleCommand(carId);
                 }
             } catch (JMSException e) {
-                System.err.println("消息处理失败: " + e.getMessage());
+                System.err.println("--消息处理失败--: " + e.getMessage());
+
+                // 关键修改：捕获消息处理异常时触发重连
+                if (running.get()) {
+                    System.err.println("--触发消息处理异常重连--");
+                    reconnectFlag.set(true);
+                }
+            } catch (Exception e) {
+                System.err.println("--未知处理异常--: " + e.getMessage());
+
+                // 关键修改：捕获其他异常时也触发重连
+                if (running.get()) {
+                    System.err.println("--触发未知异常重连--");
+                    reconnectFlag.set(true);
+                }
             }
         });
     }
@@ -78,8 +97,8 @@ public class CarMessageListener {
                 TimeUnit.SECONDS.sleep(5); // 每5秒检查一次连接
 
                 // 检查连接状态
-                if (reconnectFlag.get() || !isConnectionActive()) {
-                    System.out.println("[MQ] 检测到连接异常，尝试重连...");
+                if (reconnectFlag.get()) {
+                    System.out.println("[MQ] 检测到重连标志，尝试重连...");
                     reconnect();
                 }
             } catch (InterruptedException e) {
@@ -88,14 +107,13 @@ public class CarMessageListener {
         }
     }
 
-    // 检查连接是否活跃
-    private boolean isConnectionActive() {
-        return mqConnection != null && !reconnectFlag.get();
-    }
-
     // 重新连接逻辑
     private synchronized void reconnect() {
-        if (!reconnectFlag.compareAndSet(true, true)) return; // 防止重入
+        // 防止重入：如果已经在重连中则返回
+        if (reconnectFlag.compareAndSet(true, true)) {
+            System.out.println("[MQ] 已在重连中，跳过本次请求");
+            return;
+        }
 
         try {
             // 关闭旧连接
@@ -103,12 +121,12 @@ public class CarMessageListener {
 
             // 尝试建立新连接
             int attempts = 0;
-            while (running.get()) {
+            while (running.get()&&attempts<4) {
+                attempts++;
                 try {
-                    attempts++;
                     establishConnection();
                     System.out.println("[MQ] 重连成功（尝试次数：" + attempts + ")");
-                    reconnectFlag.set(false);
+                    reconnectFlag.set(false);  // 重置重连标志
                     return;
                 } catch (JMSException e) {
                     System.err.println("[MQ] 重连失败（尝试 " + attempts + "）: " + e.getMessage());
@@ -118,35 +136,29 @@ public class CarMessageListener {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         } finally {
-            if (running.get()) reconnectFlag.set(false);
+            if (running.get()) {
+                reconnectFlag.set(false);
+            }
         }
     }
 
-    // 异常监听器
-    private class CustomExceptionListener implements ExceptionListener {
-        @Override
-        public void onException(JMSException exception) {
-            System.err.println("[MQ] 连接异常: " + exception.getMessage());
-            reconnectFlag.set(true);
-        }
-    }
-
-    // 处理小车指令
+    // 处理小车指令 (保持不变)
     void handleCommand(String carId) {
         System.out.println("[MQ] 收到指令: " + carId);
         Car car = new Car(carId);
-        car.initialize();
-        car.moveStep();
+        if(car.initialize()) {
+            car.moveStep();
+        }
     }
 
-    // 关闭连接
+    // 关闭连接 (保持不变)
     public void closeConnection() throws JMSException {
         running.set(false);
         closeResources();
         System.out.println("[MQ] 连接已安全关闭");
     }
 
-    // 资源关闭方法
+    // 资源关闭方法 (保持不变)
     private void closeResources() {
         try {
             if (consumer != null) consumer.close();
