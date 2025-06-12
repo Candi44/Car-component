@@ -12593,3 +12593,4 @@ java.io.EOFException
 	at java.base/java.lang.Thread.run(Thread.java:840)
 2025-06-13 04:39:36 [ActiveMQ Task-1] WARN  FailoverTransport:1102 - Failed to connect to [tcp://192.168.43.69:61616] after: 1 attempt(s) with Connection refused: getsockopt, continuing to retry.
 2025-06-13 04:39:54 [ActiveMQ Task-1] INFO  FailoverTransport:1056 - Successfully reconnected to tcp://192.168.43.69:61616
+2025-06-13 04:41:19 [ActiveMQ Task-1] INFO  FailoverTransport:1054 - Successfully connected to tcp://192.168.43.69:61616
