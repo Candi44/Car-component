@@ -4,9 +4,7 @@ import redis.clients.jedis.*;
 import redis.clients.jedis.exceptions.JedisConnectionException;
 import java.net.SocketException;
 import java.time.Duration;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 public class JedisPoolUtil {
@@ -18,7 +16,7 @@ public class JedisPoolUtil {
     private static final AtomicBoolean isHealthy = new AtomicBoolean(true);
     private static final ScheduledExecutorService healthScheduler = Executors.newSingleThreadScheduledExecutor();
 
-    // 私有构造器防止实例化
+
     private JedisPoolUtil() {}
 
     // 初始化连接池
@@ -32,9 +30,9 @@ public class JedisPoolUtil {
             config.setMinEvictableIdleTime(Duration.ofSeconds(60)); //去除空闲60s的连接
             config.setTimeBetweenEvictionRuns(Duration.ofSeconds(30)); //30秒检测
             // 添加连接有效性检测
-            config.setTestOnBorrow(true);
-            config.setTestOnReturn(true);
-            config.setTestWhileIdle(true);
+            config.setTestOnBorrow(false); // 关闭借出验证
+            config.setTestOnReturn(false); // 关闭归还验证
+            config.setTestWhileIdle(true); // 保持空闲验证
 
             jedisPool = new JedisPool(config, REDIS_HOST, REDIS_PORT);
             System.out.println("Redis连接池初始化完成");
@@ -70,29 +68,29 @@ public class JedisPoolUtil {
 
     // 执行健康检查
     private static void performHealthCheck() {
-        if (jedisPool == null || jedisPool.isClosed()) {
+        // 添加超时保护
+        final Duration timeout = Duration.ofSeconds(3);
+        final Future<Boolean> checkFuture = CompletableFuture.supplyAsync(() -> {
+            try (Jedis jedis = jedisPool.getResource()) {
+                return "PONG".equals(jedis.ping());
+            } catch (Exception e) {
+                return false;
+            }
+        });
+
+        try {
+            isHealthy.set(checkFuture.get(timeout.toMillis(), TimeUnit.MILLISECONDS));
+        } catch (TimeoutException e) {
+            checkFuture.cancel(true);
             isHealthy.set(false);
-            System.err.println("[健康检查] 连接池未初始化或已关闭");
-            return;
+            System.err.println("[健康检查] 操作超时");
+        } catch (Exception e) {
+            isHealthy.set(false);
         }
 
-        try (Jedis jedis = jedisPool.getResource()) {
-            String response = jedis.ping();
-            isHealthy.set("PONG".equals(response));
-
-            if (isHealthy.get()) {
-                System.out.println("[健康检查] Redis连接正常");
-            } else {
-                System.err.println("[健康检查] Ping测试失败 - 响应: " + response);
-            }
-        } catch (JedisConnectionException | NullPointerException e) {
-            isHealthy.set(false);
-
-            if (e.getCause() instanceof SocketException) {
-                System.err.println("[健康检查] 检测到Socket重置连接");
-            } else {
-                System.err.println("[健康检查] 连接检查异常: " + e.getMessage());
-            }
+        if (!isHealthy.get()) {
+            System.err.println("[健康检查] 连接异常，触发重连");
+            reconnect();
         }
     }
 
@@ -104,6 +102,36 @@ public class JedisPoolUtil {
         }
         return null;
     }
+
+    private static int retryCount = 0;
+    private static synchronized void reconnect() {
+
+        try {
+            System.out.println("尝试重建Redis连接池...");
+            if (jedisPool != null && !jedisPool.isClosed()) {
+                jedisPool.close();
+            }
+
+            // 延迟重试（指数退避）
+            long delay = (long) (Math.pow(2, retryCount) * 1000); // 2^retryCount秒
+            Thread.sleep(Math.min(delay, 30000)); // 最多等待30秒
+
+            initialize();
+            retryCount = Math.min(retryCount + 1, 5); // 最大重试5次
+        } catch (Exception e) {
+            System.err.println("重建失败: " + e.getMessage());
+            retryCount++;
+        } finally {
+            if (isHealthy.get()) retryCount = 0; // 重置计数器
+        }
+    }
+
+
+
+
+
+
+
 
     // 获取连接状态
     public static boolean isConnectionHealthy() {

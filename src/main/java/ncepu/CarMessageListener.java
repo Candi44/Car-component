@@ -79,7 +79,7 @@ public class CarMessageListener {
                     reconnectFlag.set(true);
                 }
             } catch (Exception e) {
-                System.err.println("--未知处理异常--: " + e.getMessage());
+                System.err.println("--未知处理异常--（ MQ收到消息无法在redis修改）: " + e.getMessage());
 
                 // 捕获其他异常触发重连
                 if (running.get()) {
