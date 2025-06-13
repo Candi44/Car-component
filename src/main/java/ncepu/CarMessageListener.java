@@ -73,7 +73,7 @@ public class CarMessageListener {
             } catch (JMSException e) {
                 System.err.println("--消息处理失败--: " + e.getMessage());
 
-                // 关键修改：捕获消息处理异常时触发重连
+                // 捕获消息处理异常触发重连
                 if (running.get()) {
                     System.err.println("--触发消息处理异常重连--");
                     reconnectFlag.set(true);
@@ -81,7 +81,7 @@ public class CarMessageListener {
             } catch (Exception e) {
                 System.err.println("--未知处理异常--: " + e.getMessage());
 
-                // 关键修改：捕获其他异常时也触发重连
+                // 捕获其他异常触发重连
                 if (running.get()) {
                     System.err.println("--触发未知异常重连--");
                     reconnectFlag.set(true);
@@ -150,7 +150,7 @@ public class CarMessageListener {
         }
     }
 
-    // 处理小车指令 (保持不变)
+    // 处理小车指令
     void handleCommand(String carId) {
         System.out.println("[MQ] 收到指令: " + carId);
         Car car = new Car(carId);
@@ -159,14 +159,14 @@ public class CarMessageListener {
         }
     }
 
-    // 关闭连接 (保持不变)
+    // 关闭连接
     public void closeConnection() throws JMSException {
         running.set(false);
         closeResources();
         System.out.println("[MQ] 连接已安全关闭");
     }
 
-    // 资源关闭方法 (保持不变)
+    // 资源关闭方法
     private void closeResources() {
         try {
             if (consumer != null) consumer.close();

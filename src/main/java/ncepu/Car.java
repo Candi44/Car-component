@@ -17,7 +17,7 @@ public class Car {
     int mapWidth;
     int mapLength;
 
-    private static Supplier<Jedis> jedisProvider;
+    private static Supplier<Jedis> jedisProvider;//连接器
     private static final ExecutorService threadPool = Executors.newFixedThreadPool(10);
 
     public Car(String carId) {
@@ -36,15 +36,16 @@ public class Car {
         }
     }
 
-    public boolean initialize() {
+    public boolean initialize() {//初始化
         boolean result = false;
         if (jedisProvider == null) {
             throw new IllegalStateException("Jedis provider not set");
         }
         Jedis jedis = jedisProvider.get();
+        //获取地图信息小车位置信息
         try {
-            this.mapWidth = getIntegerConfig(jedis, "mapWidth", 10);
-            this.mapLength = getIntegerConfig(jedis, "mapLength", 10);
+            this.mapWidth = getIntegerConfig(jedis, "mapWidth");
+            this.mapLength = getIntegerConfig(jedis, "mapLength");
             if (!hasPosition(jedis)) {
                 throw new JedisConnectionException("cannot find position");
             }
@@ -131,7 +132,7 @@ public class Car {
     }
 
 
-
+    //检查障碍
     private boolean tryMove(Jedis jedis, Position target) {
         jedis.watch(obstacleKey());
         try {
@@ -145,16 +146,16 @@ public class Car {
             jedis.unwatch();
         }
     }
-
+    //更新位置
     private void updatePosition(Jedis jedis, Position newPos) {
         Position currentPos = parsePosition(jedis.get(positionKey()));
         try {
             Transaction tx = jedis.multi();
-            tx.setbit(obstacleKey(), offset(currentPos), false);
-            tx.rpush("Car" + carId + "Path", newPos.toString() + "|" + System.currentTimeMillis());
-            tx.set(positionKey(), newPos.toString());
-            tx.setbit(obstacleKey(), offset(newPos), true);
-            updateExploredMap(tx, newPos);
+            tx.setbit(obstacleKey(), offset(currentPos), false);//去掉旧位置标记
+            tx.rpush("Car" + carId + "Path", newPos.toString() + "|" + System.currentTimeMillis());//上传路径
+            tx.set(positionKey(), newPos.toString());//上传新位置
+            tx.setbit(obstacleKey(), offset(newPos), true);//上传新位置障碍物地图
+            updateExploredMap(tx, newPos);//更新探索地图
             tx.exec();
         }
 
@@ -174,6 +175,7 @@ public class Car {
 
                 // X方向边界：0到mapWidth-1
                 // Y方向边界：0到mapLength-1
+                //防止出现越过边界点亮
                 if (x >= 0 && x < mapWidth &&
                         y >= 0 && y < mapLength) {
 
@@ -205,28 +207,30 @@ public class Car {
     }
 
     // 协助方法（解析位移量、解析坐标等等）
-    private int getIntegerConfig(Jedis jedis, String key, int defaultValue) {
+    //getredis数据库方法
+    private int getIntegerConfig(Jedis jedis, String key) {
         String valueStr = jedis.get(key);
-        return (valueStr != null) ? Integer.parseInt(valueStr) : defaultValue;
+        return (valueStr != null) ? Integer.parseInt(valueStr) : 10;
     }
-
+    //是否存在坐标
     private boolean hasPosition(Jedis jedis) {
         return jedis.exists(positionKey());
     }
-
+    //获取新位置坐标（弹出）
+    //不为空就解析，为空返回null
     private Position getNextPosition(Jedis jedis) {
         String nextPosStr = jedis.lpop(routeKey());
         return (nextPosStr != null) ? parsePosition(nextPosStr) : null;
     }
-
+    //偏移量计算
     int offset(Position pos) {
         return pos.y * mapWidth + pos.x;
     }
-
+    //同上
     private int offset(int x, int y) {
         return y * mapWidth + x;
     }
-
+    //解析坐标（用，分割）
     Position parsePosition(String str) {
         String[] parts = str.split(",");
         return new Position(
@@ -235,8 +239,7 @@ public class Car {
         );
     }
 
-    // Redis key generators
-
+    // Redis key
     private String positionKey() {
         return "Car" + carId; // Car001
     }
