@@ -17,17 +17,17 @@
 
 技术栈
 
-​​核心语言​​: Java 17
+核心语言: Java 17
 
-​​数据处理​​: Redis
+数据处理: Redis
 
-​​连接管理​​: Jedis
+连接管理: Jedis
 
-​​依赖管理​​: Maven
+依赖管理: Maven
 
-​​并发处理​​: Java线程池
+并发处理: Java线程池
 
-​​单元测试​​: JUnit 5 + Mockito
+单元测试: JUnit 5 + Mockito
 
 快速开始
 
@@ -54,19 +54,21 @@ checkTaskList方法通过检测路径是否全亮以及终点附近3*3格子的�
 
 在activeMQ的操作类中使用了failover协议，保证运输层的错误能够被捕获并且能重连
 同时在重连类中也有心跳检测类捕获JMS消息异常，能够双重保证activeMQ的重连
-# 安装依赖
+
+Redis事务保证位置更新、路径记录、地图点亮操作的原子性
+### 安装依赖
 mvn clean install
 配置Redis
 在Redis中创建必要的基础数据：
 
-# 设置地图尺寸
+### 设置地图尺寸
 SET mapWidth 10
 SET mapLength 10
 
-# 设置小车初始位置
+### 设置小车初始位置
 SET Car001 "0,0"
 
-# 创建任务队列
+### 创建任务队列
 LPUSH Car001TaskList "1,0"
 运行系统
 public class Main {
@@ -82,41 +84,44 @@ Car.setJedisProvider(() -> new Jedis("localhost"));
         }
     }
 }
-# 关键类说明
-Car.java
-小车核心控制类，包含：
-
-位置管理
-移动控制
-障碍检测
-地图探索
-Redis操作
-​​主要方法​​:
-
-initialize(): 初始化小车状态
-
-moveStep(): 执行移动步骤
-
-updatePosition(): 更新位置信息
-
-CheckTask(): 检查路径状态
-
-tryMove(): 尝试移动并检测障碍
-
-CarTest.java
-单元测试类，包含对小车的全面测试：
+# 关键类
 
 
-initialize_Success(): 初始化测试
+### 小车移动控制（Car类）：
 
-moveStep_NormalMovement(): 正常移动测试
+原子性操作：通过Redis事务（MULTI/EXEC）确保位置更新、路径记录、障碍物标记的原子性
 
-moveStep_WithObstacle(): 障碍处理测试
+路径感知：动态检查路径光照状态（CheckTask()），自动清除已完全点亮区域的任务
 
-positionOperations(): 位置方法测试
+障碍物避障：实时检测目标位置障碍（tryMove()），发现障碍时清空任务队列并上报
 
-CarTestUtils.java
-测试辅助工具类，提供测试用工具方法。
+地图更新：移动时点亮周围3×3区域（updateExploredMap()）
+
+并发控制：固定线程池（10线程）管理多车移动任务
+
+### 消息驱动架构（CarMessageListener类）
+
+断线重连：指数退避策略（reconnect()），最大重连间隔30秒
+
+异常监听：MQ连接异常监听器触发自动重连
+
+指令处理：异步消息处理线程池，MQ消息解析后驱动小车移动
+
+连接监控：独立线程每5秒检测连接状态
+
+### Redis连接管理（JedisPoolUtil类）
+
+健康检查：定时（5秒）执行PING命令检测连接健康状态
+
+智能重连：3秒超时保护，重连失败时采用指数退避策略（最大重试5次）
+
+资源回收：空闲连接自动回收（60秒），JVM关闭时安全释放资源
+
+### 线程资源管理（CarThreadPool类）
+
+全局线程池：最大20线程（核心10线程），队列容量100
+
+拒绝策略：超任务时直接丢弃新任务（AbortPolicy）
 
 # API设计
 
@@ -143,7 +148,7 @@ obstacle_events	Set	障碍事件记录
 更新探索地图
 运行测试
 mvn test
-# ​​测试覆盖点​​:
+# 测试覆盖点:
 
 小车初始化逻辑
 
@@ -157,14 +162,14 @@ mvn test
 
 # 部署建议
 
-​​Redis集群​​：使用Redis Cluster提高可用性
+Redis集群：使用Redis Cluster提高可用性
 
-​​连接池​​：使用JedisPool管理连接
+连接池：使用JedisPool管理连接
 
-​​监控​​：集成Redis监控工具
+监控：集成Redis监控工具
 
-​​负载均衡​​：多实例部署小车服务
+负载均衡：多实例部署小车服务
 
-​​容器化​​：使用Docker部署
+容器化：使用Docker部署
 
 
